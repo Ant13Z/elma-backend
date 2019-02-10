@@ -16,6 +16,44 @@ type Product struct {
 	Description *string
 }
 
+func getData(request *http.Request) Product{
+	defer request.Body.Close()
+	var element Product
+	filter := true
+	body, _ := ioutil.ReadAll(request.Body)
+	err := json.Unmarshal(body, &element)
+	if err != nil {
+		//если поменяем фатал на паник, то сервер при отправке не числа падать не будет
+		log.Fatal(err)
+	} else {
+		//по идее, не прямая подстановка была создана для того чтобы решать вопросы безопасности
+		//но как это реализовано в го, я не особо в курсе, так что фильтруем дополнительно регулярками
+		//https://habr.com/en/post/308088/ говорят не полностью безопасно
+		regExpString := regexp.MustCompile("[^a-zA-Z0-9а-яА-ЯёЁ]")
+
+		element.Name = regExpString.ReplaceAllString(element.Name, "")
+		if len(element.Name) < 0 || len(element.Name) > 255 {
+			filter = false
+		}
+
+		if element.Description != nil {
+			*element.Description = regExpString.ReplaceAllString(*element.Description, "")
+		}
+
+		if element.Count < 0 || element.Count > 9999 {
+			//проверка на число не нужна, т.к. типизированный язык
+			filter = false
+		}
+		//ситуации когда пользователь не добился этого быть не может, а если кто то шлет запросы напрямую
+		//то ему информация и не нужна
+		if filter {
+			return element
+		}
+	}
+	var elementReturn Product
+	return elementReturn
+}
+
 func ProductsHandler(response http.ResponseWriter, request *http.Request){
 	//нам без разницы откуда к нам пришел запрос. если пользователь знает куда делать запрос, то может это все и
 	//руками сделать, т.е. для такого приложения должна быть доп проверка авторизации
@@ -46,46 +84,38 @@ func ProductsHandler(response http.ResponseWriter, request *http.Request){
 			fmt.Fprintf(response, string(productsJSON))
 		case "POST":
 			fmt.Println("POST")
-			defer request.Body.Close()
-			body, _ := ioutil.ReadAll(request.Body)
-			var element Product
-			err := json.Unmarshal(body, &element)
-			if err != nil {
-				log.Fatal(err)
-			} else {
-				//по идее, не прямая подстановка была создана для того чтобы решать вопросы безопасности
-				//но как это реализовано в го, я не особо в курсе, так что фильтруем дополнительно регулярками
-				//https://habr.com/en/post/308088/ говорят не полностью безопасно
-				regExp := regexp.MustCompile("[^a-zA-Z0-9а-яА-ЯёЁ]")
-				//фильтрация названия
-				element.Name = regExp.ReplaceAllString(element.Name, "")
-				//если описание существует, тоже фильтруем
-				if element.Description != nil {
-					*element.Description = regExp.ReplaceAllString(*element.Description, "")
+			element := getData(request)
+			if len(element.Name) > 0 {
+				_, err := db.Connect.Exec(""+
+					"insert ignore into products "+
+					"(`name`, `count`, `description`) "+
+					"values (?, ?, ?)",
+					element.Name,
+					element.Count,
+					element.Description)
+				if err != nil {
+					panic(err)
 				}
-				//фильтрация числа не нужна, т.к. после дешифровки json-а - присваивается в типизированное
-				//свойства объекта, т.е. там будет без вариантов число, или ошибка
-
-				//ситуации когда пользователь не добился этого быть не может, а если кто то шлет запросы напрямую
-				//то ему информация и не нужна
-				if len(element.Name) > 0 && len(element.Name) < 255 && element.Count > 0 && element.Count < 10000 {
-					_, err := db.Connect.Exec(""+
-						"insert ignore into products "+
-						"(`name`, `count`, `description`) "+
-						"values (?, ?, ?)",
-						element.Name,
-						element.Count,
-						element.Description)
-					if err != nil {
-						panic(err)
-					}
-					fmt.Println(err)
-					productJSON, _ := json.Marshal(element)
-					fmt.Fprintf(response, string(productJSON))
-				}
+				productJSON, _ := json.Marshal(element)
+				fmt.Fprintf(response, string(productJSON))
 			}
 		case "PUT":
 			fmt.Println("PUT")
+			element := getData(request)
+			if len(element.Name) > 0 {
+				_, err := db.Connect.Exec("" +
+					"update products " +
+					"set `count` = ?, `description` = ? " +
+					"where `name` = ?",
+					element.Count,
+					element.Description,
+					element.Name)
+				if err != nil {
+					panic(err)
+				}
+				productJSON, _ := json.Marshal(element)
+				fmt.Fprintf(response, string(productJSON))
+			}
 		case "DELETE":
 			//не требуется реализация, но у нас же REST ful
 			fmt.Println("DELETE")
